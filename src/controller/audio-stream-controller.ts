@@ -419,7 +419,24 @@ class AudioStreamController
 
   onLevelLoaded(event: Events.LEVEL_LOADED, data: LevelLoadedData) {
     if (this.mainDetails === null) {
-      this.mainDetails = data.details;
+      const mainDetails = (this.mainDetails = data.details);
+      // compute start position if we haven't already
+      const trackId = this.levelLastLoaded;
+      if (trackId !== null && this.levels && this.startPosition === -1) {
+        const track = this.levels[trackId];
+        if (track.details?.live) {
+          if (
+            mainDetails.hasProgramDateTime &&
+            track.details.hasProgramDateTime
+          ) {
+            alignPDT(track.details, mainDetails);
+          }
+          this.setStartPosition(
+            track.details,
+            track.details.fragments[0].start
+          );
+        }
+      }
     }
   }
 
@@ -457,8 +474,8 @@ class AudioStreamController
     track.details = newDetails;
     this.levelLastLoaded = trackId;
 
-    // compute start position
-    if (!this.startFragRequested) {
+    // compute start position if we are aligned with the main playlist
+    if (!this.startFragRequested && (this.mainDetails || !newDetails.live)) {
       this.setStartPosition(track.details, sliding);
     }
     // only switch back to IDLE state if we were waiting for track to start downloading a new fragment
@@ -621,7 +638,20 @@ class AudioStreamController
             'Frag load error must match current frag to retry'
           );
           const config = this.config;
-          if (this.fragLoadError + 1 <= this.config.fragLoadingMaxRetry) {
+          if (this.fragLoadError + 1 <= config.fragLoadingMaxRetry) {
+            if (!this.loadedmetadata) {
+              this.startFragRequested = false;
+              const details = this.levels
+                ? this.levels[frag.level].details
+                : null;
+              if (details?.live) {
+                // We can't afford to retry after a delay in a live scenario. Update the start position and return to IDLE.
+                this.startPosition = -1;
+                this.setStartPosition(details, 0);
+                this.state = State.IDLE;
+                return;
+              }
+            }
             // exponential backoff capped to config.fragLoadingMaxRetryTimeout
             const delay = Math.min(
               Math.pow(2, this.fragLoadError) * config.fragLoadingRetryDelay,
